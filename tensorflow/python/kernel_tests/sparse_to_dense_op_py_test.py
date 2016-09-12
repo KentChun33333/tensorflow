@@ -1,4 +1,4 @@
-# Copyright 2015 Google Inc. All Rights Reserved.
+# Copyright 2015 The TensorFlow Authors. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -116,7 +116,8 @@ class SparseToDenseTest(tf.test.TestCase):
       dense = _SparseToDense(
           sparse_indices=[[1], [10]], output_size=[5],
           sparse_values=[-1.0, 1.0], default_value=0.0)
-      with self.assertRaisesOpError("Index 1 is out of bounds."):
+      with self.assertRaisesOpError(
+          r"indices\[1\] = \[10\] is out of bounds: need 0 <= index < \[5\]"):
         dense.eval()
       # Disable checks, the allocation should still fail.
       with self.assertRaisesOpError("out of bounds"):
@@ -131,7 +132,7 @@ class SparseToDenseTest(tf.test.TestCase):
       dense = _SparseToDense(
           sparse_indices=[[1], [1]], output_size=[5],
           sparse_values=[-1.0, 1.0], default_value=0.0)
-      with self.assertRaisesOpError("Index 1 is repeated."):
+      with self.assertRaisesOpError(r"indices\[1\] = \[1\] is repeated"):
         dense.eval()
       # Disable checks
       dense_without_validation = _SparseToDense(
@@ -144,7 +145,7 @@ class SparseToDenseTest(tf.test.TestCase):
       dense = _SparseToDense(
           sparse_indices=[[2], [1]], output_size=[5],
           sparse_values=[-1.0, 1.0], default_value=0.0)
-      with self.assertRaisesOpError("Index 1 is out of order."):
+      with self.assertRaisesOpError(r"indices\[1\] = \[1\] is out of order"):
         dense.eval()
       # Disable checks
       dense_without_validation = _SparseToDense(

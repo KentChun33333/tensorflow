@@ -1,4 +1,4 @@
-/* Copyright 2015 Google Inc. All Rights Reserved.
+/* Copyright 2015 The TensorFlow Authors. All Rights Reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -26,7 +26,9 @@ limitations under the License.
 #include "tensorflow/core/framework/tensor.h"
 #include "tensorflow/core/framework/tensor_shape.h"
 #include "tensorflow/core/framework/types.h"
+#include "tensorflow/core/lib/core/refcount.h"
 #include "tensorflow/core/lib/core/errors.h"
+#include "tensorflow/core/lib/core/refcount.h"
 #include "tensorflow/core/lib/gtl/map_util.h"
 #include "tensorflow/core/platform/logging.h"
 #include "tensorflow/core/platform/macros.h"
@@ -42,7 +44,7 @@ typedef Eigen::GpuDevice GPUDevice;
 class Stack : public ResourceBase {
  public:
   struct TensorAndAllocation {
-    PersistentTensor tensor;
+    Tensor tensor;
     AllocatorAttributes alloc_attrs;
     bool swapped_to_cpu;
   };
@@ -70,6 +72,17 @@ class Stack : public ResourceBase {
     return Status::OK();
   }
 
+  // We don't swap the first tensor on the stack and any subsequent tensors
+  // that share the buffer with the first tensor.
+  bool IsUsefulToSwap(const Tensor& tensor) const {
+    mutex_lock l(mu_);
+    if (stack_.empty()) {
+      return false;
+    }
+    const Tensor& first = stack_.front().tensor;
+    return !tensor.SharesBufferWith(first);
+  }
+
   void Close() {
     mutex_lock l(mu_);
     stack_.clear();
@@ -89,7 +102,7 @@ class Stack : public ResourceBase {
   mutex* mu() { return &mu_; }
   Tensor* handle() { return &handle_; }
 
-  mutex mu_;
+  mutable mutex mu_;
   DataType elem_type_;
   Tensor handle_;
   bool closed_ GUARDED_BY(mu_);
@@ -170,53 +183,72 @@ class StackPushOp : public AsyncOpKernel {
     OP_REQUIRES_OK(context, context->GetAttr("swap_memory", &swap_memory_));
   }
 
-  void ComputeAsync(OpKernelContext* ctx, DoneCallback done) {
+  void ComputeAsync(OpKernelContext* ctx, DoneCallback done) override {
     // Get the stack from the handle.
     Stack* stack = nullptr;
-    OP_REQUIRES_OK(ctx, GetStack(ctx, &stack));
-    OP_REQUIRES(ctx, ctx->input_dtype(1) == stack->ElemType(),
-                errors::InvalidArgument("Must have type ", stack->ElemType(),
-                                        " but got ", ctx->input_dtype(1)));
+    Status s = GetStack(ctx, &stack);
+    if (!s.ok()) {
+      ctx->CtxFailureWithWarning(s);
+      done();
+      return;
+    }
+    core::ScopedUnref unref(stack);
+
+    if (ctx->input_dtype(1) != stack->ElemType()) {
+      ctx->CtxFailureWithWarning(
+          errors::InvalidArgument("Must have type ", stack->ElemType(),
+                                  " but got ", ctx->input_dtype(1)));
+      done();
+      return;
+    }
 
     // Push the tensor onto the stack. Swap the tensor to CPU if instructed.
     const Tensor& tensor = ctx->input(1);
     AllocatorAttributes alloc_attrs = ctx->input_alloc_attr(1);
-    static constexpr int copy_threshold = 2048;
+    // For now, we use a simple heuristic for swapping: A GPU tensor is moved
+    // to CPU if the tensor has more than kCopyThreshold bytes and the GPU
+    // allocator says more than kOccupancy of the memory is in use.
+    static constexpr int kCopyThreshold = 2048;
+    static constexpr double kOccupancy = 0.7;
     if (swap_memory_ && !alloc_attrs.on_host() &&
         std::is_same<Device, GPUDevice>::value &&
-        tensor.TotalBytes() > copy_threshold) {
-      // Asynchronously copy the tensor from GPU to CPU memory.
-      // TODO(yuanbyu): Swap only when there is mmeory pressure.
+        tensor.TotalBytes() > kCopyThreshold && stack->IsUsefulToSwap(tensor)) {
       DeviceContext* device_ctxt = ctx->op_device_context();
       auto device = static_cast<tensorflow::Device*>(ctx->device());
-      AllocatorAttributes host_alloc_attrs;
-      host_alloc_attrs.set_gpu_compatible(true);
-      host_alloc_attrs.set_on_host(true);
-      Allocator* cpu_allocator = device->GetAllocator(host_alloc_attrs);
-      Tensor* cpu_tensor =
-          new Tensor(cpu_allocator, tensor.dtype(), tensor.shape());
-      device_ctxt->CopyDeviceTensorToCPU(
-          &tensor, "StackPush", device, cpu_tensor,
-          [cpu_tensor, stack, ctx, done](const Status& s) {
-            ctx->SetStatus(s);
-            if (s.ok()) {
-              AllocatorAttributes alloc_attrs = ctx->input_alloc_attr(1);
-              ctx->SetStatus(stack->Push(
-                  {PersistentTensor(*cpu_tensor), alloc_attrs, true}));
-            }
-            if (ctx->status().ok()) {
-              ctx->set_output(0, *cpu_tensor);
-            }
-            done();
-            delete cpu_tensor;
-          });
-    } else {
-      // Execute synchronously if not swapped.
-      OP_REQUIRES_OK(
-          ctx, stack->Push({PersistentTensor(tensor), alloc_attrs, false}));
-      ctx->set_output(0, tensor);
-      done();
+      Allocator* allocator = device->GetAllocator(alloc_attrs);
+      AllocatorStats stats;
+      allocator->GetStats(&stats);
+      if (stats.bytes_in_use > (stats.bytes_limit * kOccupancy)) {
+        // Asynchronously copy the tensor from GPU to CPU memory.
+        // TODO(yuanbyu): Swap the oldest tensor first.
+        AllocatorAttributes host_alloc_attrs;
+        host_alloc_attrs.set_gpu_compatible(true);
+        host_alloc_attrs.set_on_host(true);
+        Allocator* cpu_allocator = device->GetAllocator(host_alloc_attrs);
+        Tensor* cpu_tensor =
+            new Tensor(cpu_allocator, tensor.dtype(), tensor.shape());
+        device_ctxt->CopyDeviceTensorToCPU(
+            &tensor, "StackPush", device, cpu_tensor,
+            [cpu_tensor, stack, ctx, done](const Status& s) {
+              ctx->SetStatus(s);
+              if (s.ok()) {
+                AllocatorAttributes alloc_attrs = ctx->input_alloc_attr(1);
+                ctx->SetStatus(stack->Push({*cpu_tensor, alloc_attrs, true}));
+              }
+              if (ctx->status().ok()) {
+                ctx->set_output(0, *cpu_tensor);
+              }
+              done();
+              delete cpu_tensor;
+            });
+        return;
+      }
     }
+
+    // Execute synchronously if not swapped.
+    OP_REQUIRES_OK(ctx, stack->Push({tensor, alloc_attrs, false}));
+    ctx->set_output(0, tensor);
+    done();
   }
 
   bool IsExpensive() override { return false; }
@@ -259,20 +291,31 @@ class StackPopOp : public AsyncOpKernel {
  public:
   explicit StackPopOp(OpKernelConstruction* context) : AsyncOpKernel(context) {}
 
-  void ComputeAsync(OpKernelContext* ctx, DoneCallback done) {
+  void ComputeAsync(OpKernelContext* ctx, DoneCallback done) override {
     // Get the stack from the handle.
     Stack* stack = nullptr;
-    OP_REQUIRES_OK(ctx, GetStack(ctx, &stack));
+    Status s = GetStack(ctx, &stack);
+    if (!s.ok()) {
+      ctx->CtxFailureWithWarning(s);
+      done();
+      return;
+    }
+    core::ScopedUnref unref(stack);
 
     // Pop the tensor. Transfer the tensor back to device if it was
     // swapped out to CPU.
     Stack::TensorAndAllocation value;
-    OP_REQUIRES_OK(ctx, stack->Pop(&value));
+    s = stack->Pop(&value);
+    if (!s.ok()) {
+      ctx->CtxFailureWithWarning(s);
+      done();
+      return;
+    }
     if (value.swapped_to_cpu) {
       // Asynchronously copy the tensor back from CPU to GPU memory.
       DeviceContext* device_ctxt = ctx->op_device_context();
       Device* device = static_cast<Device*>(ctx->device());
-      Tensor* cpu_tensor = value.tensor.AccessTensor(ctx);
+      Tensor* cpu_tensor = &value.tensor;
       Allocator* gpu_allocator = device->GetAllocator(value.alloc_attrs);
       Tensor* device_tensor =
           new Tensor(gpu_allocator, cpu_tensor->dtype(), cpu_tensor->shape());
@@ -288,7 +331,7 @@ class StackPopOp : public AsyncOpKernel {
           });
     } else {
       // Execute synchronously if not swapped.
-      ctx->set_output(0, *value.tensor.AccessTensor(ctx));
+      ctx->set_output(0, value.tensor);
       done();
     }
   }
@@ -331,6 +374,7 @@ class StackCloseOp : public OpKernel {
   void Compute(OpKernelContext* ctx) override {
     Stack* stack = nullptr;
     OP_REQUIRES_OK(ctx, GetStack(ctx, &stack));
+    core::ScopedUnref unref(stack);
     stack->Close();
   }
 

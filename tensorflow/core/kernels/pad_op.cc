@@ -1,4 +1,4 @@
-/* Copyright 2015 Google Inc. All Rights Reserved.
+/* Copyright 2015 The TensorFlow Authors. All Rights Reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -76,10 +76,20 @@ class PadOp : public OpKernel {
       OP_REQUIRES(context, before_d >= 0 && after_d >= 0,
                   errors::InvalidArgument("Paddings must be non-negative: ",
                                           before_d, " ", after_d));
-      const int size_d =
+      const int64 size_d =
           (allow_legacy_scalars() && d == in0.dims()) ? 1 : in0.dim_size(d);
       output_shape.AddDim(before_d + size_d + after_d);
     }
+
+    // If there is no padding to be done, forward the input to output.
+    if (output_shape.num_elements() == in0.NumElements()) {
+      // When num_elements == 0, shape may have changed.
+      Tensor out;
+      CHECK(out.CopyFrom(in0, output_shape));
+      context->set_output(0, out);
+      return;
+    }
+
     Tensor* output = nullptr;
     OP_REQUIRES_OK(context, context->allocate_output(0, output_shape, &output));
 
@@ -136,7 +146,7 @@ class PadOp : public OpKernel {
                               .HostMemory("paddings"),   \
                           PadOp<CPUDevice, type>)
 
-TF_CALL_ALL_TYPES(REGISTER_KERNEL);
+TF_CALL_POD_TYPES(REGISTER_KERNEL);
 #undef REGISTER_KERNEL
 
 #if GOOGLE_CUDA

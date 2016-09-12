@@ -1,4 +1,4 @@
-/* Copyright 2015 Google Inc. All Rights Reserved.
+/* Copyright 2015 The TensorFlow Authors. All Rights Reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -171,15 +171,20 @@ class ReductionOp : public OpKernel {
     OP_REQUIRES_OK(ctx, ctx->allocate_temp(out->dtype(), helper.out_reshape(),
                                            &tmp_out, alloc_attr));
 
-    typedef functor::ReduceFunctor<Device> Functor;
+    typedef functor::ReduceFunctor<Device, Reducer> Functor;
     Constants<Device> constants;
     const Device& d = ctx->eigen_device<Device>();
     Reducer reducer;
 
     if (tmp_out.NumElements() == 0) {
       // Nothing to do, fall through to final reshaping.
-    }
-    if ((helper.ndims() == 1) && helper.reduce_first_axis()) {
+    } else if (data.NumElements() == 0) {
+      // Degenerate reduction where the input is empty but the output is
+      // nonempty (thus tmp_out.NumElements() > 0), and we must fill the output
+      // with identity elements.  Example: tf.reduce_sum(tf.zeros((0, 3)), [0]).
+      // Eigen sometimes crashes in this case, so we do it manually.
+      Functor::FillIdentity(d, tmp_out.flat<T>(), reducer);
+    } else if ((helper.ndims() == 1) && helper.reduce_first_axis()) {
       // Reduce to a scalar.
       Functor::Reduce(d, helper.out<T, 0>(&tmp_out), helper.in<T, 1>(data),
                       constants.kZero, reducer);
@@ -234,14 +239,19 @@ class ReductionOp : public OpKernel {
 
 namespace functor {
 
-template <>
-struct ReduceFunctor<CPUDevice> {
-  template <typename OUT_T, typename IN_T, typename ReductionAxes,
-            typename Reducer>
+template <typename Reducer>
+struct ReduceFunctor<CPUDevice, Reducer> {
+  template <typename OUT_T, typename IN_T, typename ReductionAxes>
   static void Reduce(const CPUDevice& d, OUT_T out, IN_T in,
                      const ReductionAxes& reduction_axes,
                      const Reducer& reducer) {
     ReduceEigenImpl(d, out, in, reduction_axes, reducer);
+  }
+
+  template <typename OUT_T>
+  static void FillIdentity(const CPUDevice& d, OUT_T out,
+                           const Reducer& reducer) {
+    FillIdentityEigenImpl(d, out, reducer);
   }
 };
 

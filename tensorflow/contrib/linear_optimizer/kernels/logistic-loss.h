@@ -1,4 +1,4 @@
-/* Copyright 2016 Google Inc. All Rights Reserved.
+/* Copyright 2016 The TensorFlow Authors. All Rights Reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -19,54 +19,35 @@ limitations under the License.
 #include <algorithm>
 #include <cmath>
 
+#include "tensorflow/contrib/linear_optimizer/kernels/loss.h"
+#include "tensorflow/core/lib/core/errors.h"
+
 namespace tensorflow {
-struct logistic_loss {
-  // Use an approximate step that is guaranteed to decrease the dual loss.
-  // Derivation of this is available in  Page 14 Eq 16 of
-  // http://arxiv.org/pdf/1211.2717v1.pdf
-  inline static double ComputeUpdatedDual(const double label,
-                                          const double example_weight,
-                                          const double current_dual,
-                                          const double wx,
-                                          const double weighted_example_norm,
-                                          const double primal_loss,
-                                          const double dual_loss) {
-    const double ywx = label * wx;
-    // To avoid overflow, we compute derivative of logistic loss with respect to
-    // log-odds as follows.
-    double inverse_exp_term = 0;
-    if (ywx > 0) {
-      const double exp_minus_ywx = exp(-ywx);
-      inverse_exp_term = exp_minus_ywx / (1 + exp_minus_ywx);
-    } else {
-      inverse_exp_term = 1 / (1 + exp(ywx));
+
+class LogisticLossUpdater : public DualLossUpdater {
+ public:
+  // Adding vs. Averaging in Distributed Primal-Dual Optimization.
+  // Chenxin Ma, Virginia Smith, Martin Jaggi, Michael I. Jordan, Peter
+  // Richtarik, Martin Takac http://arxiv.org/abs/1502.03508
+  double ComputeUpdatedDual(const int num_partitions, const double label,
+                            const double example_weight,
+                            const double current_dual, const double wx,
+                            const double weighted_example_norm) const final {
+    // Newton algorithm converges quadratically so 10 steps will be largely
+    // enough to achieve a very good precision
+    static const int newton_total_steps = 10;
+    double x = 0;
+    for (int i = 0; i < newton_total_steps; ++i) {
+      x = NewtonStep(x, num_partitions, label, wx, example_weight,
+                     weighted_example_norm, current_dual);
     }
-    // f(a) = sup (a*x  - f(x)) then a = f'(x), where a is the aproximate dual.
-    const double approximate_dual = inverse_exp_term * label;
-    const double delta_dual = approximate_dual - current_dual;
-    // Upper bound on the smoothness constant of log loss. This is 0.25 i.e.
-    // when log-odds is zero.
-    const double gamma =
-        (wx == 0) ? 0.25 : (1 - 2 * inverse_exp_term) / (2 * ywx);
-    const double wx_dual = wx * current_dual * example_weight;
-    const double delta_dual_squared = delta_dual * delta_dual;
-    const double smooth_delta_dual_squared = delta_dual_squared * gamma * 0.5;
-    double multiplier =
-        (primal_loss + dual_loss + wx_dual + smooth_delta_dual_squared) /
-        std::max(1.0,
-                 delta_dual_squared *
-                     (gamma +
-                      weighted_example_norm * example_weight * example_weight));
-    // Multiplier must be in the range [0, 1].
-    multiplier = std::max(std::min(1.0, multiplier), 0.0);
-    return current_dual + delta_dual * multiplier;
+    return 0.5 * (1 + tanh(x)) / label;
   }
 
   // Dual of logisitic loss function.
   // https://en.wikipedia.org/wiki/Convex_conjugate
-  inline static double ComputeDualLoss(const double current_dual,
-                                       const double example_label,
-                                       const double example_weight) {
+  double ComputeDualLoss(const double current_dual, const double example_label,
+                         const double example_weight) const final {
     // Dual of the logistic loss function is
     // ay * log(ay) + (1-ay) * log (1-ay), where a is the dual variable.
     const double ay = current_dual * example_label;
@@ -78,9 +59,8 @@ struct logistic_loss {
 
   // Logistic loss for binary classification.
   // https://en.wikipedia.org/wiki/Loss_functions_for_classification
-  inline static double ComputePrimalLoss(const double wx,
-                                         const double example_label,
-                                         const double example_weight) {
+  double ComputePrimalLoss(const double wx, const double example_label,
+                           const double example_weight) const final {
     // Logistic loss:
     //   log(1 + e^(-ywx))
     //   log(e^0 + e^(-ywx))
@@ -97,7 +77,43 @@ struct logistic_loss {
     // log(1 + e^(ywx)) - ywx
     return (log(1 + exp(y_wx)) - y_wx) * example_weight;
   }
+
+  // Converts binary example labels from 0.0 or 1.0 to -1.0 or 1.0 respectively
+  // as expected by logistic regression.
+  Status ConvertLabel(float* const example_label) const final {
+    if (*example_label == 0.0) {
+      *example_label = -1;
+      return Status::OK();
+    }
+    if (*example_label == 1.0) {
+      return Status::OK();
+    }
+    return errors::InvalidArgument(
+        "Only labels of 0.0 or 1.0 are supported right now. "
+        "Found example with label: ",
+        *example_label);
+  }
+
+ private:
+  // We use Newton algorithm on a modified function (see readme.md).
+  double NewtonStep(const double x, const int num_partitions,
+                    const double label, const double wx,
+                    const double example_weight,
+                    const double weighted_example_norm,
+                    const double current_dual) const {
+    const double tanhx = tanh(x);
+    const double numerator = -2 * label * x - wx -
+                             num_partitions * weighted_example_norm *
+                                 example_weight *
+                                 (0.5 * (1 + tanhx) / label - current_dual);
+    const double denominator = -2 * label -
+                               num_partitions * weighted_example_norm *
+                                   example_weight * (1 - tanhx * tanhx) * 0.5 /
+                                   label;
+    return x - numerator / denominator;
+  }
 };
+
 }  // namespace tensorflow
 
 #endif  // THIRD_PARTY_TENSORFLOW_CONTRIB_LINEAR_OPTIMIZER_KERNELS_LOGISTIC_LOSS_H_
