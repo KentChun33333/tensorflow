@@ -134,7 +134,7 @@ Example:
    # v is the numpy array [10, 20]
    # 'fetches' can be a list.
    v = session.run([a, b])
-   # v a Python list with 2 numpy arrays: the numpy array [10, 20] and the
+   # v is a Python list with 2 numpy arrays: the numpy array [10, 20] and the
    # 1-D array [1.0, 2.0]
    # 'fetches' can be arbitrary lists, tuples, namedtuple, dicts:
    MyData = collections.namedtuple('MyData', ['a', 'b'])
@@ -454,8 +454,8 @@ Creates a new `OpError` indicating that a particular op failed.
 ##### Args:
 
 
-*  <b>`node_def`</b>: The `graph_pb2.NodeDef` proto representing the op that failed,
-    if known; otherwise None.
+*  <b>`node_def`</b>: The `node_def_pb2.NodeDef` proto representing the op that
+    failed, if known; otherwise None.
 *  <b>`op`</b>: The `ops.Operation` that failed, if known; otherwise None.
 *  <b>`message`</b>: The message string describing the failure.
 *  <b>`error_code`</b>: The `error_codes_pb2.Code` describing the error.

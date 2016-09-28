@@ -90,7 +90,7 @@ collection `GraphKeys.VARIABLES`. The convenience function
 `all_variables()` returns the contents of that collection.
 
 When building a machine learning model it is often convenient to distinguish
-betwen variables holding the trainable model parameters and other variables
+between variables holding the trainable model parameters and other variables
 such as a `global step` variable used to count training steps. To make this
 easier, the variable constructor supports a `trainable=<bool>` parameter. If
 `True`, the new variable is also added to the graph collection
@@ -147,10 +147,6 @@ variable to its initial value.
 *  <b>`dtype`</b>: If set, initial_value will be converted to the given type.
     If `None`, either the datatype will be kept (if `initial_value` is
     a Tensor), or `convert_to_tensor` will decide.
-
-##### Returns:
-
-  A Variable.
 
 ##### Raises:
 
@@ -627,8 +623,8 @@ variables if there are any, or an empty array if there are none.
 
 ##### Returns:
 
-  A 1-D tensor containing names of the unintialized variables, or an empty 1-D
-  tensor if there are no variables or no uninitialized variables.
+  A 1-D tensor containing names of the uninitialized variables, or an empty
+  1-D tensor if there are no variables or no uninitialized variables.
 
 
 - - -
@@ -739,7 +735,7 @@ protocol buffer file in the call to `save()`.
 
 - - -
 
-#### `tf.train.Saver.__init__(var_list=None, reshape=False, sharded=False, max_to_keep=5, keep_checkpoint_every_n_hours=10000.0, name=None, restore_sequentially=False, saver_def=None, builder=None, defer_build=False)` {#Saver.__init__}
+#### `tf.train.Saver.__init__(var_list=None, reshape=False, sharded=False, max_to_keep=5, keep_checkpoint_every_n_hours=10000.0, name=None, restore_sequentially=False, saver_def=None, builder=None, defer_build=False, allow_empty=False)` {#Saver.__init__}
 
 Creates a `Saver`.
 
@@ -804,6 +800,9 @@ checkpoints per device.
 *  <b>`defer_build`</b>: If `True`, defer adding the save and restore ops to the
     `build()` call. In that case `build()` should be called before
     finalizing the graph or using the saver.
+*  <b>`allow_empty`</b>: If `False` (default) raise an error if there are no
+    variables in the graph. Otherwise, construct the saver anyway and make
+    it a no-op.
 
 ##### Raises:
 
@@ -848,6 +847,7 @@ path can be passed directly to a call to `restore()`.
   A string: path at which the variables were saved.  If the saver is
     sharded, this string ends with: '-?????-of-nnnnn' where 'nnnnn'
     is the number of shards created.
+  If the saver is empty, returns None.
 
 ##### Raises:
 
@@ -1173,8 +1173,8 @@ Some useful partitioners are available.  See, e.g.,
 
 
 *  <b>`ValueError`</b>: when creating a new variable and shape is not declared,
-    or when violating reuse during variable creation. Reuse is set inside
-    `variable_scope`.
+    when violating reuse during variable creation, or when `initializer` dtype
+    and `dtype` don't match. Reuse is set inside `variable_scope`.
 
 
 - - -
@@ -1724,7 +1724,7 @@ Returns an initializer that generates tensors with a uniform distribution.
 
 - - -
 
-### `tf.uniform_unit_scaling_initializer(factor=1.0, seed=None, dtype=tf.float32, full_shape=None)` {#uniform_unit_scaling_initializer}
+### `tf.uniform_unit_scaling_initializer(factor=1.0, seed=None, dtype=tf.float32)` {#uniform_unit_scaling_initializer}
 
 Returns an initializer that generates tensors without scaling variance.
 
@@ -1744,12 +1744,6 @@ See [Sussillo et al., 2014](https://arxiv.org/abs/1412.6558)
 and the calculation of constants. In section 2.3 there, the constants were
 numerically computed: for a linear layer it's 1.0, relu: ~1.43, tanh: ~1.15.
 
-If the shape tuple `full_shape` is provided, the scale will be calculated from
-this predefined shape.  This is useful when a `Variable` is being partitioned
-across several shards, and each shard has a smaller shape than the whole.
-Since the shards are usually concatenated when used, the scale should be
-based on the shape of the whole.
-
 ##### Args:
 
 
@@ -1758,9 +1752,6 @@ based on the shape of the whole.
     [`set_random_seed`](../../api_docs/python/constant_op.md#set_random_seed)
     for behavior.
 *  <b>`dtype`</b>: The data type. Only floating point types are supported.
-*  <b>`full_shape`</b>: Tuple or list of integers.  The shape used for calculating
-    scale normalization (instead of the shape passed at creation time).
-    Useful when creating sharded variables via partitioning.
 
 ##### Returns:
 
@@ -1774,20 +1765,38 @@ based on the shape of the whole.
 
 - - -
 
-### `tf.zeros_initializer(shape, dtype=tf.float32)` {#zeros_initializer}
+### `tf.zeros_initializer(shape, dtype=tf.float32, partition_info=None)` {#zeros_initializer}
 
 An adaptor for zeros() to match the Initializer spec.
 
 
 - - -
 
-### `tf.ones_initializer(shape, dtype=tf.float32)` {#ones_initializer}
+### `tf.ones_initializer(shape, dtype=tf.float32, partition_info=None)` {#ones_initializer}
 
 An adaptor for ones() to match the Initializer spec.
 
 
 
 ## Variable Partitioners for Sharding
+
+- - -
+
+### `tf.fixed_size_partitioner(num_shards, axis=0)` {#fixed_size_partitioner}
+
+Partitioner to specify a fixed number of shards along given axis.
+
+##### Args:
+
+
+*  <b>`num_shards`</b>: `int`, number of shards to partition variable.
+*  <b>`axis`</b>: `int`, axis to partition on.
+
+##### Returns:
+
+  A partition function usable as the `partitioner` argument to
+  `variable_scope`, `get_variable`, and `get_partitioned_variable_list`.
+
 
 - - -
 
@@ -2018,6 +2027,96 @@ Requires `updates.shape = indices.shape + ref.shape[1:]`.
 
 - - -
 
+### `tf.scatter_mul(ref, indices, updates, use_locking=None, name=None)` {#scatter_mul}
+
+Multiplies sparse updates into a variable reference.
+
+This operation computes
+
+    # Scalar indices
+    ref[indices, ...] *= updates[...]
+
+    # Vector indices (for each i)
+    ref[indices[i], ...] *= updates[i, ...]
+
+    # High rank indices (for each i, ..., j)
+    ref[indices[i, ..., j], ...] *= updates[i, ..., j, ...]
+
+This operation outputs `ref` after the update is done.
+This makes it easier to chain operations that need to use the reset value.
+
+Duplicate entries are handled correctly: if multiple `indices` reference
+the same location, their contributions multiply.
+
+Requires `updates.shape = indices.shape + ref.shape[1:]`.
+
+##### Args:
+
+
+*  <b>`ref`</b>: A mutable `Tensor`. Must be one of the following types: `float32`, `float64`, `int64`, `int32`, `uint8`, `uint16`, `int16`, `int8`, `complex64`, `complex128`, `qint8`, `quint8`, `qint32`, `half`.
+    Should be from a `Variable` node.
+*  <b>`indices`</b>: A `Tensor`. Must be one of the following types: `int32`, `int64`.
+    A tensor of indices into the first dimension of `ref`.
+*  <b>`updates`</b>: A `Tensor`. Must have the same type as `ref`.
+    A tensor of updated values to multiply to `ref`.
+*  <b>`use_locking`</b>: An optional `bool`. Defaults to `False`.
+    If True, the operation will be protected by a lock;
+    otherwise the behavior is undefined, but may exhibit less contention.
+*  <b>`name`</b>: A name for the operation (optional).
+
+##### Returns:
+
+  Same as `ref`.  Returned as a convenience for operations that want
+  to use the updated values after the update is done.
+
+
+- - -
+
+### `tf.scatter_div(ref, indices, updates, use_locking=None, name=None)` {#scatter_div}
+
+Divides a variable reference by sparse updates.
+
+This operation computes
+
+    # Scalar indices
+    ref[indices, ...] /= updates[...]
+
+    # Vector indices (for each i)
+    ref[indices[i], ...] /= updates[i, ...]
+
+    # High rank indices (for each i, ..., j)
+    ref[indices[i, ..., j], ...] /= updates[i, ..., j, ...]
+
+This operation outputs `ref` after the update is done.
+This makes it easier to chain operations that need to use the reset value.
+
+Duplicate entries are handled correctly: if multiple `indices` reference
+the same location, their contributions divide.
+
+Requires `updates.shape = indices.shape + ref.shape[1:]`.
+
+##### Args:
+
+
+*  <b>`ref`</b>: A mutable `Tensor`. Must be one of the following types: `float32`, `float64`, `int64`, `int32`, `uint8`, `uint16`, `int16`, `int8`, `complex64`, `complex128`, `qint8`, `quint8`, `qint32`, `half`.
+    Should be from a `Variable` node.
+*  <b>`indices`</b>: A `Tensor`. Must be one of the following types: `int32`, `int64`.
+    A tensor of indices into the first dimension of `ref`.
+*  <b>`updates`</b>: A `Tensor`. Must have the same type as `ref`.
+    A tensor of values that `ref` is divided by.
+*  <b>`use_locking`</b>: An optional `bool`. Defaults to `False`.
+    If True, the operation will be protected by a lock;
+    otherwise the behavior is undefined, but may exhibit less contention.
+*  <b>`name`</b>: A name for the operation (optional).
+
+##### Returns:
+
+  Same as `ref`.  Returned as a convenience for operations that want
+  to use the updated values after the update is done.
+
+
+- - -
+
 ### `tf.sparse_mask(a, mask_indices, name=None)` {#sparse_mask}
 
 Masks elements of `IndexedSlices`.
@@ -2167,7 +2266,7 @@ The `Graph` that contains the values, indices, and shape tensors.
 Returns `MetaGraphDef` proto. Optionally writes it to filename.
 
 This function exports the graph, saver, and collection objects into
-`MetaGraphDef` protocol buffer with the intension of it being imported
+`MetaGraphDef` protocol buffer with the intention of it being imported
 at a later time or location to restart training, run inference, or be
 a subgraph.
 

@@ -279,7 +279,7 @@ bool ReplaceTensorWithConstant(Graph* graph, Device* partition_device,
       edges_to_remove.push_back(out_edge);
     }
   }
-  string node_name = n->name();
+  const string& node_name = n->name();
   Node* constant_node;
   auto builder = NodeDefBuilder(strings::StrCat(graph->NewName(node_name),
                                                 "__cf__", UniqueConstantId()),
@@ -402,19 +402,7 @@ bool DoConstantFolding(const ConstantFoldingOptions& opts,
   args.rendezvous = rendez;
 
   // Run the constant_graph.
-  Notification executor_done;
-  Status executor_done_status;
-  ExecutorBarrier* barrier = new ExecutorBarrier(
-      1, rendez, [&executor_done, &executor_done_status](const Status& ret) {
-        executor_done_status = ret;
-        executor_done.Notify();
-      });
-
-  executor->RunAsync(args, barrier->Get());
-
-  executor_done.WaitForNotification();
-
-  if (!executor_done_status.ok()) {
+  if (!executor->Run(args).ok()) {
     return false;
   }
 

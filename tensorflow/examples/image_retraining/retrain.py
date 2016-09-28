@@ -80,6 +80,7 @@ import tensorflow as tf
 from tensorflow.python.framework import graph_util
 from tensorflow.python.framework import tensor_shape
 from tensorflow.python.platform import gfile
+from tensorflow.python.util import compat
 
 
 import struct
@@ -226,7 +227,7 @@ def create_image_lists(image_dir, testing_percentage, validation_percentage):
       # To do that, we need a stable way of deciding based on just the file name
       # itself, so we do a hash of that and then use that to generate a
       # probability value that we use to assign it.
-      hash_name_hashed = hashlib.sha1(hash_name.encode('utf-8')).hexdigest()
+      hash_name_hashed = hashlib.sha1(compat.as_bytes(hash_name)).hexdigest()
       percentage_hash = (int(hash_name_hashed, 16) % (65536)) * (100 / 65535.0)
       if percentage_hash < validation_percentage:
         validation_images.append(base_name)
@@ -267,7 +268,8 @@ def get_image_path(image_lists, label_name, index, image_dir, category):
     tf.logging.fatal('Category does not exist %s.', category)
   category_list = label_lists[category]
   if not category_list:
-    tf.logging.fatal('Category has no images - %s.', category)
+    tf.logging.fatal('Label %s has no images in the category %s.',
+                     label_name, category)
   mod_index = index % len(category_list)
   base_name = category_list[mod_index]
   sub_dir = label_lists['dir']
@@ -321,7 +323,7 @@ def run_bottleneck_on_image(sess, image_data, image_data_tensor,
 
   Args:
     sess: Current active TensorFlow Session.
-    image_data: Numpy array of image data.
+    image_data: String of raw JPEG data.
     image_data_tensor: Input data layer in the graph.
     bottleneck_tensor: Layer before the final softmax.
 
@@ -702,8 +704,8 @@ def variable_summaries(var, name):
     mean = tf.reduce_mean(var)
     tf.scalar_summary('mean/' + name, mean)
     with tf.name_scope('stddev'):
-      stddev = tf.sqrt(tf.reduce_sum(tf.square(var - mean)))
-    tf.scalar_summary('sttdev/' + name, stddev)
+      stddev = tf.sqrt(tf.reduce_mean(tf.square(var - mean)))
+    tf.scalar_summary('stddev/' + name, stddev)
     tf.scalar_summary('max/' + name, tf.reduce_max(var))
     tf.scalar_summary('min/' + name, tf.reduce_min(var))
     tf.histogram_summary(name, var)
@@ -852,7 +854,7 @@ def main(_):
 
   # Run the training for as many cycles as requested on the command line.
   for i in range(FLAGS.how_many_training_steps):
-    # Get a catch of input bottleneck values, either calculated fresh every time
+    # Get a batch of input bottleneck values, either calculated fresh every time
     # with distortions applied, or from the cache stored on disk.
     if do_distort_images:
       train_bottlenecks, train_ground_truth = get_random_distorted_bottlenecks(

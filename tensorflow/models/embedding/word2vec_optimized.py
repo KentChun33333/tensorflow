@@ -51,7 +51,7 @@ flags.DEFINE_string(
     "Training data. E.g., unzipped file http://mattmahoney.net/dc/text8.zip.")
 flags.DEFINE_string(
     "eval_data", None, "Analogy questions. "
-    "https://word2vec.googlecode.com/svn/trunk/questions-words.txt.")
+    "See README.md for how to get 'questions-words.txt'.")
 flags.DEFINE_integer("embedding_size", 200, "The embedding dimension size.")
 flags.DEFINE_integer(
     "epochs_to_train", 15,
@@ -385,8 +385,9 @@ class Word2Vec(object):
     idx = self._predict(wid)
     for c in [self._id2word[i] for i in idx[0, :]]:
       if c not in [w0, w1, w2]:
-        return c
-    return "unknown"
+        print(c)
+        break
+    print("unknown")
 
   def nearby(self, words, num=20):
     """Prints out nearby words given a list of words."""

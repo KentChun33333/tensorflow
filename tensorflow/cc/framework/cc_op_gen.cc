@@ -232,7 +232,7 @@ string PrintAttrValue(string op, const AttrValue& attr_value) {
 string ToCamelCase(const string& str) {
   string result;
   const char joiner = '_';
-  int i = 0;
+  size_t i = 0;
   bool cap = true;
   while (i < str.size()) {
     const char c = str[i++];
@@ -692,6 +692,13 @@ string OpInfo::GetConstructorBody() const {
   strings::StrAppend(&body, "  ", scope_str, ".UpdateBuilder(&builder);\n");
   strings::StrAppend(&body, "  ", scope_str, ".UpdateStatus(builder.Finalize(",
                      scope_str, ".graph(), &ret));\n");
+
+  // TODO(b/28152992): Enable this code-path once we have converted
+  // all python shape functions to call their C++ versions.
+
+  // strings::StrAppend(&body, "  ", scope_str, ".UpdateStatus(", scope_str,
+  //                    ".refiner()->AddNode(ret));\n");
+
   GetOutput(&body);
   return body;
 }
